@@ -4,11 +4,11 @@ from conans import ConanFile, CMake
 class ChatserverConan(ConanFile):
     name = "ChatServer"
     version = "0.1"
-    license = "<Put the package license here>"
-    author = "<Put your name here> <And your email here>"
-    url = "<Package recipe repository url here, for issues about the package>"
-    description = "<Description of Chatserver here>"
-    topics = ("<Put some tag here>", "<here>", "<and here>")
+    license = "Boost Software License"
+    author = "Toyuresh"
+    url = "https://github.com/Toyuresh/Chat-app"
+    description = "Simple chat-app"
+    topics = ("Chat-app", "chat-server", "Website")
     settings = "os", "compiler", "build_type", "arch"
     options = {"shared": [True, False]}
     default_options = "shared=False"

@@ -1,7 +1,10 @@
 //Creating a Http pipeline 
 #include "http_session.hpp"
 #include "websocket_session.hpp"
+#include <boost/config.hpp>
 #include <iostream>
+
+#define BOOST_NO_CXX14_GENERIC_LAMBDAS
 
 //------------------------------------------------
 
@@ -47,9 +50,9 @@ std::string path_cat(
     boost::beast::string_view path)
 {
     if(base.empty())
-        return path.to_string();
-    std::string result = base.to_string();
-#if BOOST_MSVC
+        return std::string(path);
+    std::string result(base);
+#ifdef BOOST_MSVC
     char constexpr path_separator = '\\';
     if(result.back() == path_separator)
         result.resize(result.size() - 1);
@@ -85,7 +88,7 @@ void handle_request(
         res.set(http::field::server, BOOST_BEAST_VERSION_STRING);
         res.set(http::field::content_type, "text/html");
         res.keep_alive(req.keep_alive());
-        res.body() = why.to_string();
+        res.body() = std::string(why);
         res.prepare_payload();
         return res;
     };
@@ -111,7 +114,7 @@ void handle_request(
         res.set(http::field::server, BOOST_BEAST_VERSION_STRING);
         res.set(http::field::content_type, "text/html");
         res.keep_alive(req.keep_alive());
-        res.body() = "An error occurred: '" + what.to_string() + "'";
+        res.body() = "An error occurred: '" + std::string(what) + "'";
         res.prepare_payload();
         return res;
     };

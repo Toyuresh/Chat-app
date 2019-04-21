@@ -3,7 +3,9 @@
 #ifndef SHARED_STATE_HPP
 #define SHARED_STATE_HPP
 
+#include <boost/smart_ptr.hpp>
 #include <memory>
+#include <mutex>
 #include <string>
 #include <unordered_set>
 
@@ -20,19 +22,19 @@ public:
     {
         return doc_root_;
     }
-    
-    void join (websocket_session& session);
-    void leave (websocket_session& session);
-    void send (std::string message);
+
+    void join(websocket_session* session);
+    void leave(websocket_session* session);
+    void send(std::string message);
 
 private:
-    std::string doc_root_;
+    std::string const doc_root_;
 
-    //This simple method of tracking
-    //session only works with an implicit
-    //strand(i.e a single-threaded server)
+    //This mutex synchronizes all access to sessions_
+    std::mutex mutex_;
+
+    //Keep a list of all the connected clinets
     std::unordered_set<websocket_session*> sessions_;
-
 };
 
 #endif

@@ -1,115 +1,175 @@
 
 #include "http_pipelining.hpp"
 #include "http_session.hpp"
-#include "websocket_session.hpp"
-#include <iostream>
+
+#define BOOST_NO_CXX14_GENERIC_LAMBDAS
+//-----------------------------------------------------------------
+
+struct http_session::send_lambda
+{
+    http_session& self_;
+    explicit send_lambda(http_session& self)
+            : self_(self)
+    {
+
+    }
+    template<bool isRequest,class Body,class Fields>
+    void operator()(http::message<isRequest,Body,Fields>&& msg) const
+    {
+        //The lifetime of the message has to extend
+        //for the duration of the async operation so 
+        //we use a shared_ptr to manage it.
+        auto sp = boost::make_shared<http::message<isRequest,Body,Fields>>(std::move(msg));
+
+        //Write the response
+        auto self = self_.shared_from_this();
+        http::async_write(
+            self_.stream_,
+            *sp,
+            [self,sp](beast::error_code ec, std::size_t bytes)
+            {
+                self->on_write(ec,bytes,sp->need_eof());
+            });
+    }
+};
+
+//------------------------------------------------------------------
 
 http_session::http_session(
-    tcp::socket socket,
-    std::shared_ptr<shared_state> const& state)
-    : socket_(std::move(socket))
+    tcp::socket&& socket,
+    boost::shared_ptr<shared_state>const& state)
+    : stream_(std::move(socket))
     , state_(state)
 {
+
 }
 
 void http_session::run()
 {
-    // Read a request
-    http::async_read(socket_, buffer_, req_,
-        [self = shared_from_this()]
-            (error_code ec, std::size_t bytes)
-        {
-            self->on_read(ec, bytes);
-        });
+    do_read();
 }
 
-// Report a failure
-void http_session::fail(error_code ec, char const* what)
+//Report a failure
+void http_session::fail(beast::error_code ec, char const* what)
 {
-    // Don't report on canceled operations
+    //Don't report on canceled operations
     if(ec == net::error::operation_aborted)
+    {
         return;
-
+    }
     std::cerr << what << ": " << ec.message() << "\n";
 }
 
-void http_session::on_read(error_code ec, std::size_t)
+void http_session::do_read()
 {
-    // This means they closed the connection
-    if(ec == http::error::end_of_stream)
-    {
-        socket_.shutdown(tcp::socket::shutdown_send, ec);
-        return;
-    }
+    //Construct a new parser for each message
+    parser_.emplace();
 
-    // Handle the error, if any
-    if(ec)
-        return fail(ec, "read");
+    //Apply a reasonable limit to the allowed size
+    //of the body in bytes to prevent abuse.
+    parser_->body_limit(10000);
 
-    // See if it is a WebSocket Upgrade
-    if(websocket::is_upgrade(req_))
-    {
-        // Create a WebSocket session by transferring the socket
-        std::make_shared<websocket_session>(
-            std::move(socket_), state_)->run(std::move(req_));
-        return;
-    }
+    //Set the timeout.
+    stream_.expires_after(std::chrono::seconds(30));
 
-    // Send the response
-    handle_request(state_->doc_root(), std::move(req_),
-        [this](auto&& response)
-        {
-            // The lifetime of the message has to extend
-            // for the duration of the async operation so
-            // we use a shared_ptr to manage it.
-            using response_type = typename std::decay<decltype(response)>::type;
-            auto sp = std::make_shared<response_type>(std::forward<decltype(response)>(response));
-
-#if 0
-            // NOTE This causes an ICE in gcc 7.3
-            // Write the response
-            http::async_write(this->socket_, *sp,
-				[self = shared_from_this(), sp](
-					error_code ec, std::size_t bytes)
-				{
-					self->on_write(ec, bytes, sp->need_eof()); 
-				});
-#else
-            // Write the response
-            auto self = shared_from_this();
-            http::async_write(this->socket_, *sp,
-				[self, sp](
-					error_code ec, std::size_t bytes)
-				{
-					self->on_write(ec, bytes, sp->need_eof()); 
-				});
-#endif
-        });
+    //Read a request
+    http::async_read(
+        stream_,
+        buffer_,
+        parser_->get(),
+        beast::bind_front_handler(
+            &http_session::on_read,
+            shared_from_this()));
 }
 
-void http_session::on_write(error_code ec, std::size_t, bool close)
+void http_session::on_read(beast::error_code ec, std::size_t)
 {
-    // Handle the error, if any
-    if(ec)
-        return fail(ec, "write");
-
-    if(close)
+    //This means they closed the connection
+    if(ec == http::error::end_of_stream)
     {
-        // This means we should close the connection, usually because
-        // the response indicated the "Connection: close" semantic.
-        socket_.shutdown(tcp::socket::shutdown_send, ec);
+        stream_.socket().shutdown(tcp::socket::shutdown_send,ec);
         return;
     }
 
-    // Clear contents of the request message,
-    // otherwise the read behavior is undefined.
-    req_ = {};
+    //Handle the error, if any
+    if(ec)
+    {
+        return fail(ec,"read");
+    }
 
-    // Read another request
-    http::async_read(socket_, buffer_, req_,
-        [self = shared_from_this()]
-            (error_code ec, std::size_t bytes)
+    //See if it is a websocket upgrade
+    if(websocket::is_upgrade(parser_->get()))
+    {
+        //Create a websocket session, transferring ownership
+        //of both the socket and the HTTP request.
+        boost::make_shared<websocket_session>(
+            stream_.release_socket(),
+                state_)->run(parser_->release());
+                return;
+    }
+
+    //Send the response
+#ifndef BOOST_NO_CXX14_GENERIC_LAMBDAS
+    //
+    //The following code requires generic
+    //lambdas, available in C++14 and later.
+    //
+    handle_request(
+        state_->doc_root(),
+        std::move(req_),
+        [this](auto&& response)
         {
-            self->on_read(ec, bytes);
+            //The lifetime of the message has to extend
+            //for the duration of the async operation so
+            //we use a shared_ptr to manage it.
+            using response_type = typename std::decay<decltype(response)>::type;
+            auto sp = boost::make_shared<response_type>(std::forward<decltype(response)>(response));
+        
+        #if 0
+            //NOTE this causes an ICE in gcc 7.3
+            //Write the response
+            http::async_write(this->stream_,*sp,
+            [self = shared_from_this(),sp](beast::error_code ec, std::size_t bytes)
+            {
+                self->on_write(ec,bytes,sp->need_eof());
+            });
+        #else
+            //write the reponse
+            auto self = shared_from_this();
+            http::async_write(stream_,*sp,
+                [self,sp](
+                    beast::error_code ec,std::size_t bytes)
+                    {
+                        self->on_write(ec,bytes,sp->need_eof());
+                    });
+        #endif
         });
+#else
+    //
+    //This code uses the function object type send_lambda in
+    //place of a generic lambda which is not available in C++11
+    //
+    handle_request(
+        state_->doc_root(),
+        parser_->release(),
+        send_lambda(*this));
+#endif
+}
+void http_session::on_write(beast::error_code ec, std::size_t,bool close)
+{
+    //Handle the error, if any
+    if(ec)
+    {
+        return fail(ec,"write");
+    }
+    if(close)
+    {
+        //This means we should close the connection, usually because
+        //the response indicated the "Connection: close" semantic.
+        stream_.socket().shutdown(tcp::socket::shutdown_send,ec);
+        return;
+    }
+    
+    //Read another request
+    do_read();
 }

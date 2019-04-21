@@ -58,13 +58,4 @@ add_library(server listener.cpp http_session.cpp websocket_session.cpp shared_st
 add_executable(chatServer ${APP_FILES} ${BEAST_FILES})
 target_link_libraries(chatServer server)
 
-if(NOT WIN32)
-  find_package(Threads)
-  target_link_libraries(chatServer PRIVATE Threads::Threads ${Boost_SYSTEM_LIBRARY})
-endif()
-
-set_target_properties(chatServer PROPERTIES
-  VS_DEBUGGER_WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
-
-set_property(DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR} PROPERTY
-  VS_STARTUP_PROJECT chatServer)
+set_property(TARGET chatServer PROPERTY FOLDER "example-chat-server")

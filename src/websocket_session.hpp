@@ -15,45 +15,61 @@
 //Forward declaration
 class shared_state;
 
-//Represents an active websocket connection to the server
+/** Represents an active WebSocket connection to the server
+*/
 
-class websocket_session : public std::enable_shared_from_this<websocket_session>
+
+class websocket_session : public boost::enable_shared_from_this<websocket_session>
 {
-
 public:
-    websocket_session(tcp::socket socket,std::shared_ptr<shared_state>const& state);
-    ~websocket_session();
+    websocket_session(
+        tcp::socket&& socket,
+        boost::shared_ptr<shared_state>const& state);
 
+    ~websocket_session();
+    
     template<class Body,class Allocator>
-    void run(http::request<Body,http::basic_fields<Allocator>>req);
+    void run(http::request<Body,http::basic_fields<Allocator>> req);
 
     //Send a message
-    void send(std::shared_ptr<std::string const>const& ss);
-
-private:
+    void send(boost::shared_ptr<std::string const>const& ss);
+    void on_send(boost::shared_ptr<std::string const>const& ss);
+private: 
     beast::flat_buffer buffer_;
-    websocket::stream<tcp::socket> ws_;
-    std::shared_ptr<shared_state> state_;
-    std::vector<std::shared_ptr<std::string const>> queue_;
+    websocket::stream<beast::tcp_stream> ws_;
+    boost::shared_ptr<shared_state> state_;
+    std::vector<boost::shared_ptr<std::string const>> queue_;
 
-    void fail(error_code ec,char const* what);
-    void on_accept(error_code ec);
-    void on_read(error_code ec, std::size_t bytes_transferred);
-    void on_write(error_code ec,std::size_t bytes_transferred);
+    void fail(beast::error_code ec, char const* what);
+    void on_accept(beast::error_code ec);
+    void on_read(beast::error_code ec, std::size_t bytes_transferred);
+    void on_write(beast::error_code ec, std::size_t bytes_transferred);
+
 };
 
 template<class Body,class Allocator>
-void
-websocket_session::run(http::request<Body,http::basic_fields<Allocator>> req)
+void websocket_session::run(http::request<Body,http::basic_fields<Allocator>> req)
 {
-    //Accept the websocket handshake
+    //Set suggested timeout settings for the websocket
+    ws_.set_option(
+        websocket::stream_base::timeout::suggested(
+            beast::role_type::server));
+    
+    //Set a decorator to change the server of the handshake
+    ws_.set_option(websocket::stream_base::decorator(
+        [](websocket::response_type& res)
+        {
+            res.set(http::field::server,
+                std::string(BOOST_BEAST_VERSION_STRING) + 
+                "websocket-chat-multi");
+        }));
 
-    ws_.async_accept(req,
-                        std::bind(
-                            &websocket_session::on_accept,
-                            shared_from_this(),
-                            std::placeholders::_1
-                        ));
+    //Accept the websocket handshake
+    ws_.async_accept(
+        req,
+        beast::bind_front_handler(
+            &websocket_session::on_accept,
+            shared_from_this()));
 }
 
 #endif
